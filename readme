@@ -1,0 +1,1 @@
+This crate provides a very simple layer over `futures::stream::FuturesUnordered` that allows user to limit amount of async task per batch.
