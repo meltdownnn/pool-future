@@ -5,18 +5,51 @@
 //! the execution sequence is not that easy. Limiting the number of futures running at one time,
 //! for example, is not intuitive. Thus, this simple crate provides a thin layer on top of
 //! `FuturesUnordered` that provides the possibility to execute a given number of future at the same time.
+#[cfg(test)]
+mod test;
 use futures::stream::{FuturesUnordered, StreamExt};
 /// A simple furure pool that store elements in a vector
 pub struct VectorFuturePool<T: std::future::Future> {
-    pub elements: Vec<T>,
+    pub elements: Box<Vec<T>>,
     pub pool_size: usize,
+    future_pool: FuturesUnordered<T>,
+}
+impl<T: std::future::Future> core::ops::Deref for VectorFuturePool<T> {
+    type Target = FuturesUnordered<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.future_pool
+    }
+}
+impl<T: std::future::Future> core::ops::DerefMut for VectorFuturePool<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.future_pool
+    }
+}
+impl<T: std::future::Future> futures::Stream for VectorFuturePool<T> {
+    type Item = T::Output;
+    fn poll_next(self: core::pin::Pin<&mut Self>, cx: &mut futures::task::Context<'_>) -> futures::task::Poll<Option<Self::Item>> {
+        let reference = core::pin::Pin::get_mut(self);
+        reference.fill_pool();
+        futures::stream::Stream::poll_next(core::pin::Pin::new(&mut reference.future_pool), cx)
+    }
 }
 impl<T: std::future::Future> VectorFuturePool<T> {
     pub fn new(elements: Vec<T>, pool_size: usize) -> Self {
         Self {
-            elements,
+            elements: Box::new(elements),
             pool_size,
+            future_pool: FuturesUnordered::new(),
         }
+    }
+    fn fill_pool(&mut self) {
+        while (self.future_pool.len() != self.pool_size) && (self.elements.len() != 0) {
+            self.future_pool.push(self.elements.remove(0))
+        }
+    }
+    async fn drain_future_pool(&mut self) -> Vec<T::Output> {
+        let mut new_future_pool = FuturesUnordered::new();
+        std::mem::swap(&mut self.future_pool, &mut new_future_pool);
+        new_future_pool.collect().await
     }
     /// Execute several future at the same time.
     ///
@@ -28,13 +61,8 @@ impl<T: std::future::Future> VectorFuturePool<T> {
     /// `pool_size` async functions running, but when a future is completed, no new function will
     /// be called.
     pub async fn execute(&mut self) -> Vec<<T as std::future::Future>::Output> {
-        let remove_len = if self.elements.len() >= self.pool_size {
-            self.pool_size
-        } else {
-            self.elements.len()
-        };
-        let current_execution: FuturesUnordered<_> = self.elements.drain(..remove_len).collect();
-        current_execution.collect::<Vec<T::Output>>().await
+        self.fill_pool();
+        self.drain_future_pool().await
     }
     /// Execute all futures in `self.elements`.
     ///
@@ -42,25 +70,15 @@ impl<T: std::future::Future> VectorFuturePool<T> {
     /// futures running at any time during the execution untill the amount of elements is not
     /// enough.
     pub async fn execute_till_complete(&mut self) -> Vec<<T as std::future::Future>::Output> {
-        let remove_len = if self.elements.len() >= self.pool_size {
-            self.pool_size
-        } else {
-            return self.execute().await;
-        };
-        let mut first_branch: FuturesUnordered<_> = self.elements.drain(..remove_len).collect();
-        let mut result = Vec::new();
-        while let Some(i) = first_branch.next().await {
-            result.push(i);
-            if self.elements.len() != 0 {
-                // next() should internally call poll_next(), so this should be fine.
-                first_branch.push(self.elements.remove(0));
-            }
+        let mut result = Vec::with_capacity(self.elements.len() + self.future_pool.len());
+        while (self.elements.len() != 0) | (self.future_pool.len() != 0) {
+            self.fill_pool();
+            result.append(&mut self.drain_future_pool().await)
         }
-    result
+        result
     }
     /// Whether elements are empty.
     pub fn is_empty(&self) -> bool {
         self.elements.is_empty()
     }
 }
-
