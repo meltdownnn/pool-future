@@ -1,6 +1,6 @@
 [package]
 name = "pool-future"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Meltdownnn <75382863+meltdownnn@users.noreply.github.com>"]
 edition = "2018"
 

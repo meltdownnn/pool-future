@@ -27,7 +27,10 @@ impl<T: std::future::Future> core::ops::DerefMut for VectorFuturePool<T> {
 }
 impl<T: std::future::Future> futures::Stream for VectorFuturePool<T> {
     type Item = T::Output;
-    fn poll_next(self: core::pin::Pin<&mut Self>, cx: &mut futures::task::Context<'_>) -> futures::task::Poll<Option<Self::Item>> {
+    fn poll_next(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut futures::task::Context<'_>,
+    ) -> futures::task::Poll<Option<Self::Item>> {
         let reference = core::pin::Pin::get_mut(self);
         reference.fill_pool();
         futures::stream::Stream::poll_next(core::pin::Pin::new(&mut reference.future_pool), cx)
